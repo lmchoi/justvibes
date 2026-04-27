@@ -15,7 +15,7 @@ import {
   type LiveMusicServerMessage,
   type LiveMusicSession,
 } from '@google/genai';
-import {decode, decodeAudioData} from './utils';
+import {decode, decodeAudioData, encodeWav} from './utils';
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -423,6 +423,31 @@ export class PlayPauseButton extends IconButton {
     } else {
       return this.renderPlay();
     }
+  }
+}
+
+@customElement('record-button')
+export class RecordButton extends IconButton {
+  @property({type: Boolean}) isRecording = false;
+
+  static override styles = [
+    IconButton.styles,
+    css`
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
+      .recording-dot {
+        animation: pulse 1.2s ease-in-out infinite;
+      }
+    `,
+  ];
+
+  override renderIcon() {
+    if (this.isRecording) {
+      return svg`<rect class="recording-dot" x="54" y="38" width="32" height="32" rx="4" fill="#FF4444" />`;
+    }
+    return svg`<circle cx="70" cy="54" r="16" fill="#FEFEFE" />`;
   }
 }
 
@@ -931,6 +956,10 @@ class SettingsController extends LitElement {
 
   @state() private config: LiveMusicGenerationConfig = this.defaultConfig;
 
+  public get currentConfig() {
+    return this.config;
+  }
+
   @state() showAdvanced = false;
 
   @state() autoDensity = true;
@@ -1056,6 +1085,7 @@ class SettingsController extends LitElement {
       'visible': this.showAdvanced,
     });
     const musicGenerationModeMap = new Map<string, string>([
+      ['Default', 'MUSIC_GENERATION_MODE_UNSPECIFIED'],
       ['Quality', 'QUALITY'],
       ['Diversity', 'DIVERSITY'],
       ['Vocalization', 'VOCALIZATION'],
@@ -1110,7 +1140,7 @@ class SettingsController extends LitElement {
             type="range"
             id="topK"
             min="1"
-            max="100"
+            max="1000"
             step="1"
             .value=${cfg.topK!.toString()}
             @input=${this.handleInputChange} />
@@ -1133,7 +1163,7 @@ class SettingsController extends LitElement {
             type="number"
             id="bpm"
             min="60"
-            max="180"
+            max="200"
             .value=${cfg.bpm ?? ''}
             @input=${this.handleInputChange}
             placeholder="Auto" />
@@ -1325,7 +1355,8 @@ class PromptDj extends LitElement {
     }
     play-pause-button,
     add-prompt-button,
-    reset-button {
+    reset-button,
+    record-button {
       width: 12vmin;
       flex-shrink: 0;
     }
@@ -1353,6 +1384,8 @@ class PromptDj extends LitElement {
   private nextStartTime = 0;
   private readonly bufferTime = 2; // adds an audio buffer in case of netowrk latency
   @state() private playbackState: PlaybackState = 'stopped';
+  @state() private isRecording = false;
+  private recordingChunks: Uint8Array[] = [];
   @property({type: Object})
   private filteredPrompts = new Set<string>();
   private connectionError = true;
@@ -1360,6 +1393,7 @@ class PromptDj extends LitElement {
   @query('play-pause-button') private playPauseButton!: PlayPauseButton;
   @query('toast-message') private toastMessage!: ToastMessage;
   @query('settings-controller') private settingsController!: SettingsController;
+  @query('record-button') private recordButton!: RecordButton;
 
   constructor(prompts: Map<string, Prompt>) {
     super();
@@ -1396,8 +1430,12 @@ class PromptDj extends LitElement {
               this.playbackState === 'stopped'
             )
               return;
+            const rawChunk = decode(e.serverContent.audioChunks[0].data);
+            if (this.isRecording) {
+              this.recordingChunks.push(rawChunk);
+            }
             const audioBuffer = await decodeAudioData(
-              decode(e.serverContent?.audioChunks[0].data),
+              rawChunk,
               this.audioContext,
               48000,
               2,
@@ -1439,6 +1477,23 @@ class PromptDj extends LitElement {
     });
   }
 
+  private async serverLog(type: string, data: unknown) {
+    const entry = {
+      timestamp: new Date().toISOString(),
+      type,
+      data,
+    };
+    try {
+      await fetch('/api/log', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(entry),
+      });
+    } catch (e) {
+      console.error('Failed to send log to server:', e);
+    }
+  }
+
   private setSessionPrompts = throttle(async () => {
     const promptsToSend = Array.from(this.prompts.values()).filter((p) => {
       return !this.filteredPrompts.has(p.text) && p.weight !== 0;
@@ -1446,6 +1501,7 @@ class PromptDj extends LitElement {
     const weightedPrompts = promptsToSend.map((p) => {
       return {text: p.text, weight: p.weight};
     });
+    this.serverLog('prompts_updated', weightedPrompts);
     try {
       await this.session.setWeightedPrompts({
         weightedPrompts,
@@ -1530,6 +1586,7 @@ class PromptDj extends LitElement {
   }
 
   private pauseAudio() {
+    this.serverLog('session_paused', {});
     this.session.pause();
     this.playbackState = 'paused';
     this.outputNode.gain.setValueAtTime(1, this.audioContext.currentTime);
@@ -1542,7 +1599,21 @@ class PromptDj extends LitElement {
     this.outputNode.connect(this.audioContext.destination);
   }
 
+  private getCurrentState() {
+    const weightedPrompts = Array.from(this.prompts.values())
+      .filter((p) => !this.filteredPrompts.has(p.text) && p.weight !== 0)
+      .map((p) => ({text: p.text, weight: p.weight}));
+
+    return {
+      model: model,
+      apiVersion: 'v1alpha',
+      prompts: weightedPrompts,
+      config: this.settingsController?.currentConfig || {},
+    };
+  }
+
   private loadAudio() {
+    this.serverLog('session_started', this.getCurrentState());
     this.audioContext.resume();
     this.session.play();
     this.playbackState = 'loading';
@@ -1551,9 +1622,14 @@ class PromptDj extends LitElement {
       1,
       this.audioContext.currentTime + 0.1,
     );
+    if (!this.isRecording) {
+      this.recordingChunks = [];
+      this.isRecording = true;
+    }
   }
 
   private stopAudio() {
+    this.serverLog('session_stopped', {});
     this.session.stop();
     this.playbackState = 'stopped';
     this.outputNode.gain.setValueAtTime(0, this.audioContext.currentTime);
@@ -1562,6 +1638,10 @@ class PromptDj extends LitElement {
       this.audioContext.currentTime + 0.1,
     );
     this.nextStartTime = 0;
+    if (this.isRecording) {
+      this.isRecording = false;
+      this.saveRecording();
+    }
   }
 
   private async handleAddPrompt() {
@@ -1637,6 +1717,7 @@ class PromptDj extends LitElement {
 
   private updateSettings = throttle(
     async (e: CustomEvent<LiveMusicGenerationConfig>) => {
+      this.serverLog('settings_updated', e.detail);
       await this.session?.setMusicGenerationConfig({
         musicGenerationConfig: e.detail,
       });
@@ -1652,10 +1733,43 @@ class PromptDj extends LitElement {
     this.pauseAudio();
     this.session.resetContext();
     this.settingsController.resetToDefaults();
+    this.serverLog('settings_reset', {});
     this.session?.setMusicGenerationConfig({
       musicGenerationConfig: {},
     });
     setTimeout(this.loadAudio.bind(this), 100);
+  }
+
+  private handleRecord() {
+    if (this.isRecording) {
+      this.isRecording = false;
+      this.saveRecording();
+    } else if (this.playbackState === 'playing' || this.playbackState === 'loading') {
+      this.recordingChunks = [];
+      this.isRecording = true;
+    }
+  }
+
+  private saveRecording() {
+    if (this.recordingChunks.length === 0) return;
+
+    const totalBytes = this.recordingChunks.reduce((sum, c) => sum + c.length, 0);
+    const pcm = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of this.recordingChunks) {
+      pcm.set(chunk, offset);
+      offset += chunk.length;
+    }
+    this.recordingChunks = [];
+
+    const wavBuffer = encodeWav(pcm, 48000, 2);
+    const blob = new window.Blob([wavBuffer], {type: 'audio/wav'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `justvibes-${Date.now()}.wav`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   override render() {
@@ -1683,6 +1797,9 @@ class PromptDj extends LitElement {
           @click=${this.handlePlayPause}
           .playbackState=${this.playbackState}></play-pause-button>
         <reset-button @click=${this.handleReset}></reset-button>
+        <record-button
+          @click=${this.handleRecord}
+          .isRecording=${this.isRecording}></record-button>
       </div>
       <toast-message></toast-message>`;
   }
@@ -1771,6 +1888,7 @@ declare global {
     'settings-controller': SettingsController;
     'add-prompt-button': AddPromptButton;
     'play-pause-button': PlayPauseButton;
+    'record-button': RecordButton;
     'reset-button': ResetButton;
     'weight-slider': WeightSlider;
     'toast-message': ToastMessage;
