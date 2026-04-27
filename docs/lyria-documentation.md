@@ -26,3 +26,39 @@ While official, stable documentation for the `-exp` (experimental) model is acti
 *   **[Google AI Studio: Prompt Gallery & Cookbooks](https://aistudio.google.com/app/prompts)**: Often contains experimental notebooks and cookbooks demonstrating WebSocket connections for real-time models.
 
 *Note: Because `lyria-realtime-exp` is an experimental model, API signatures and capabilities (like the `guidance` scale or specific enum values) are subject to change.*
+
+---
+
+# Lyria 3 Clip Preview (`lyria-3-clip-preview`) Reference
+
+## Key Facts
+- **API style:** Standard `generateContent` (single-turn REST, NOT a WebSocket)
+- **Output:** Always a **30-second MP3** clip; WAV is not supported
+- **Input:** Text prompt only (no image input documented)
+- **No seeding:** No `AudioPrompt` or seed-from-clip parameter exists on this model
+
+## SDK Call (JavaScript)
+```javascript
+const response = await ai.models.generateContent({
+  model: 'lyria-3-clip-preview',
+  contents: 'Dark hypnotic techno, 130 BPM',
+});
+```
+
+## Extracting Audio
+The response parts include both optional text (lyrics/description) and binary MP3 inline data:
+```javascript
+for (const part of response.candidates[0].content.parts) {
+  if (part.inlineData?.data) {
+    // part.inlineData.data — base64-encoded MP3
+    // part.inlineData.mimeType — 'audio/mpeg'
+    const bytes = Uint8Array.from(atob(part.inlineData.data), c => c.charCodeAt(0));
+    const blob = new Blob([bytes], { type: 'audio/mpeg' });
+    const url = URL.createObjectURL(blob);
+    // play or store url — remember to URL.revokeObjectURL(url) when done
+  }
+}
+```
+
+## Phase 3 Note
+Seeding a `lyria-realtime-exp` session from a clip requires passing the 30s audio as an `AudioPrompt` to `session.setWeightedPrompts`. This API is not yet documented; refer to NEXT_STEPS.md for the intended workflow.

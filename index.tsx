@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import {css, CSSResultGroup, html, LitElement, svg} from 'lit';
+import {css, CSSResultGroup, html, LitElement, nothing, svg} from 'lit';
 import {customElement, property, query, state} from 'lit/decorators.js';
 import {classMap} from 'lit/directives/class-map.js';
 import {styleMap} from 'lit/directives/style-map.js';
@@ -455,6 +455,21 @@ export class AddPromptButton extends IconButton {
   }
 }
 
+// VibeCheckButton component
+// -----------------------------------------------------------------------------
+/** A button for opening the Vibe Check clip preview panel. */
+@customElement('vibe-check-button')
+export class VibeCheckButton extends IconButton {
+  override renderIcon() {
+    return svg`
+      <rect x="49" y="47" width="7" height="14" rx="3" fill="#fefefe"/>
+      <rect x="61" y="41" width="7" height="26" rx="3" fill="#fefefe"/>
+      <rect x="73" y="44" width="7" height="20" rx="3" fill="#fefefe"/>
+      <rect x="85" y="47" width="7" height="14" rx="3" fill="#fefefe"/>
+    `;
+  }
+}
+
 // Toast Message component
 // -----------------------------------------------------------------------------
 
@@ -687,6 +702,203 @@ class PromptController extends LitElement {
         >
       </div>
     </div>`;
+  }
+}
+
+// VibeCheckPanel component
+// -----------------------------------------------------------------------------
+
+type VibeCheckState = 'idle' | 'generating' | 'ready' | 'error';
+
+/** Panel for generating a 30-second clip preview via lyria-3-clip-preview. */
+@customElement('vibe-check-panel')
+class VibeCheckPanel extends LitElement {
+  static override styles = css`
+    :host {
+      display: none;
+      background-color: #1d1d1d;
+      border-radius: 5px;
+      padding: 1.2vmin 2vmin;
+      gap: 1.5vmin;
+      font-family: 'Google Sans', sans-serif;
+      font-size: 1.5vmin;
+      color: #eee;
+      box-sizing: border-box;
+      align-items: center;
+    }
+    :host([visible]) {
+      display: flex;
+      flex-direction: row;
+    }
+    textarea {
+      flex: 1;
+      min-width: 0;
+      background: #2a2a2a;
+      color: #eee;
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 0.8vmin 1vmin;
+      font-family: inherit;
+      font-size: 1.5vmin;
+      resize: none;
+      height: 4.5vmin;
+      outline: none;
+      scrollbar-width: thin;
+      scrollbar-color: #666 #1a1a1a;
+    }
+    textarea:focus {
+      border-color: #9900ff;
+    }
+    textarea::placeholder {
+      color: #555;
+    }
+    .generate-btn {
+      background: #5200ff;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 0.8vmin 1.8vmin;
+      font-family: inherit;
+      font-size: 1.5vmin;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: background 0.2s;
+    }
+    .generate-btn:hover:not(:disabled) {
+      background: #7033ff;
+    }
+    .generate-btn:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 1vmin;
+      color: #888;
+      font-size: 1.4vmin;
+      flex-shrink: 0;
+    }
+    .spinner {
+      width: 2.5vmin;
+      height: 2.5vmin;
+      border: 0.3vmin solid #444;
+      border-top-color: #9900ff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    audio {
+      flex: 1;
+      min-width: 0;
+      height: 4vmin;
+      accent-color: #9900ff;
+    }
+    .error {
+      color: #ff5555;
+      font-size: 1.4vmin;
+      flex-shrink: 0;
+    }
+    .seed-btn {
+      background: transparent;
+      color: #555;
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 0.8vmin 1.5vmin;
+      font-family: inherit;
+      font-size: 1.4vmin;
+      cursor: not-allowed;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+  `;
+
+  @property({type: Boolean, reflect: true}) visible = false;
+  @state() private promptText = '';
+  @state() private genState: VibeCheckState = 'idle';
+  @state() private clipUrl: string | null = null;
+  @state() private errorMsg = '';
+
+  private async handleGenerate() {
+    if (!this.promptText.trim() || this.genState === 'generating') return;
+    this.genState = 'generating';
+    this.clipUrl = null;
+    try {
+      const response = await ai.models.generateContent({
+        model: 'lyria-3-clip-preview',
+        contents: this.promptText,
+      });
+      for (const part of response.candidates?.[0]?.content?.parts ?? []) {
+        if (part.inlineData?.data) {
+          const bytes = Uint8Array.from(atob(part.inlineData.data), (c) =>
+            c.charCodeAt(0),
+          );
+          const blob = new Blob([bytes], {
+            type: part.inlineData.mimeType || 'audio/mpeg',
+          });
+          if (this.clipUrl) URL.revokeObjectURL(this.clipUrl);
+          this.clipUrl = URL.createObjectURL(blob);
+          this.genState = 'ready';
+          return;
+        }
+      }
+      throw new Error('No audio in response');
+    } catch (e: unknown) {
+      this.genState = 'error';
+      this.errorMsg = e instanceof Error ? e.message : 'Generation failed';
+    }
+  }
+
+  private handleKeyDown(e: KeyboardEvent) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      this.handleGenerate();
+    }
+  }
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this.clipUrl) URL.revokeObjectURL(this.clipUrl);
+  }
+
+  private renderStatus() {
+    if (this.genState === 'generating') {
+      return html`<div class="status"><div class="spinner"></div>Generating…</div>`;
+    }
+    if (this.genState === 'ready' && this.clipUrl) {
+      return html`
+        <audio controls src=${this.clipUrl}></audio>
+        <button class="seed-btn" title="Coming in Phase 3">Seed Session →</button>
+      `;
+    }
+    if (this.genState === 'error') {
+      return html`<div class="error">${this.errorMsg}</div>`;
+    }
+    return nothing;
+  }
+
+  override render() {
+    const isGenerating = this.genState === 'generating';
+    return html`
+      <textarea
+        .value=${this.promptText}
+        placeholder="Describe your vibe… e.g. 'Dark hypnotic techno, 130 BPM'"
+        @input=${(e: Event) => {
+          this.promptText = (e.target as HTMLTextAreaElement).value;
+        }}
+        @keydown=${this.handleKeyDown}></textarea>
+      <button
+        class="generate-btn"
+        ?disabled=${isGenerating || !this.promptText.trim()}
+        @click=${this.handleGenerate}>
+        Preview Vibe
+      </button>
+      ${this.renderStatus()}
+    `;
   }
 }
 
@@ -1325,9 +1537,15 @@ class PromptDj extends LitElement {
     }
     play-pause-button,
     add-prompt-button,
-    reset-button {
+    reset-button,
+    vibe-check-button {
       width: 12vmin;
       flex-shrink: 0;
+    }
+    vibe-check-panel {
+      width: 100%;
+      box-sizing: border-box;
+      margin: 0.5vmin 0;
     }
     prompt-controller {
       height: 100%;
@@ -1356,6 +1574,8 @@ class PromptDj extends LitElement {
   @property({type: Object})
   private filteredPrompts = new Set<string>();
   private connectionError = true;
+
+  @state() private showVibeCheck = false;
 
   @query('play-pause-button') private playPauseButton!: PlayPauseButton;
   @query('toast-message') private toastMessage!: ToastMessage;
@@ -1678,11 +1898,14 @@ class PromptDj extends LitElement {
         <settings-controller
           @settings-changed=${this.updateSettings}></settings-controller>
       </div>
+      <vibe-check-panel .visible=${this.showVibeCheck}></vibe-check-panel>
       <div class="playback-container">
         <play-pause-button
           @click=${this.handlePlayPause}
           .playbackState=${this.playbackState}></play-pause-button>
         <reset-button @click=${this.handleReset}></reset-button>
+        <vibe-check-button
+          @click=${() => { this.showVibeCheck = !this.showVibeCheck; }}></vibe-check-button>
       </div>
       <toast-message></toast-message>`;
   }
@@ -1769,6 +1992,8 @@ declare global {
     'prompt-dj': PromptDj;
     'prompt-controller': PromptController;
     'settings-controller': SettingsController;
+    'vibe-check-panel': VibeCheckPanel;
+    'vibe-check-button': VibeCheckButton;
     'add-prompt-button': AddPromptButton;
     'play-pause-button': PlayPauseButton;
     'reset-button': ResetButton;
