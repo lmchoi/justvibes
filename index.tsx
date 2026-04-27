@@ -952,6 +952,8 @@ class SettingsController extends LitElement {
     topK: 40,
     guidance: 4.0,
     musicGenerationMode: 'QUALITY',
+    density: 0.5,
+    brightness: 0.5,
   };
 
   @state() private config: LiveMusicGenerationConfig = this.defaultConfig;
@@ -962,20 +964,20 @@ class SettingsController extends LitElement {
 
   @state() showAdvanced = false;
 
-  @state() autoDensity = true;
+  @state() autoDensity = false;
 
-  @state() lastDefinedDensity: number;
+  @state() lastDefinedDensity: number = 0.5;
 
-  @state() autoBrightness = true;
+  @state() autoBrightness = false;
 
-  @state() lastDefinedBrightness: number;
+  @state() lastDefinedBrightness: number = 0.5;
 
   public resetToDefaults() {
     this.config = this.defaultConfig;
-    this.autoDensity = true;
-    this.lastDefinedDensity = undefined;
-    this.autoBrightness = true;
-    this.lastDefinedBrightness = undefined;
+    this.autoDensity = false;
+    this.lastDefinedDensity = 0.5;
+    this.autoBrightness = false;
+    this.lastDefinedBrightness = 0.5;
     this.dispatchSettingsChange();
   }
 
@@ -1383,6 +1385,7 @@ class PromptDj extends LitElement {
   private outputNode: GainNode = this.audioContext.createGain();
   private nextStartTime = 0;
   private readonly bufferTime = 2; // adds an audio buffer in case of netowrk latency
+  private effectiveSeed: number | undefined;
   @state() private playbackState: PlaybackState = 'stopped';
   @state() private isRecording = false;
   private recordingChunks: Uint8Array[] = [];
@@ -1484,13 +1487,19 @@ class PromptDj extends LitElement {
       data,
     };
     try {
-      await fetch('/api/log', {
+      const response = await fetch('api/log', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(entry),
       });
+      if (!response.ok) {
+        console.warn(`[ServerLog] Failed: ${response.status} ${response.statusText}`);
+        // Fallback: log stringified to console so it's not truncated in exports
+        console.log(`[DATA] ${type}:`, JSON.stringify(data));
+      }
     } catch (e) {
-      console.error('Failed to send log to server:', e);
+      console.error('[ServerLog] Error:', e);
+      console.log(`[DATA] ${type}:`, JSON.stringify(data));
     }
   }
 
@@ -1604,15 +1613,30 @@ class PromptDj extends LitElement {
       .filter((p) => !this.filteredPrompts.has(p.text) && p.weight !== 0)
       .map((p) => ({text: p.text, weight: p.weight}));
 
+    const sc = this.settingsController;
     return {
       model: model,
       apiVersion: 'v1alpha',
       prompts: weightedPrompts,
-      config: this.settingsController?.currentConfig || {},
+      config: {
+        ...(sc?.currentConfig || {}),
+        seed: this.effectiveSeed ?? sc?.currentConfig?.seed,
+      },
+      autoDensity: sc?.autoDensity ?? false,
+      autoBrightness: sc?.autoBrightness ?? false,
     };
   }
 
   private loadAudio() {
+    const configSeed = this.settingsController?.currentConfig?.seed;
+    if (configSeed == null && this.effectiveSeed == null) {
+      this.effectiveSeed = Math.floor(Math.random() * 2 ** 31);
+      this.session?.setMusicGenerationConfig({
+        musicGenerationConfig: {seed: this.effectiveSeed},
+      });
+    } else if (configSeed != null) {
+      this.effectiveSeed = configSeed;
+    }
     this.serverLog('session_started', this.getCurrentState());
     this.audioContext.resume();
     this.session.play();
@@ -1731,6 +1755,7 @@ class PromptDj extends LitElement {
       this.setSessionPrompts();
     }
     this.pauseAudio();
+    this.effectiveSeed = undefined;
     this.session.resetContext();
     this.settingsController.resetToDefaults();
     this.serverLog('settings_reset', {});
@@ -1743,8 +1768,10 @@ class PromptDj extends LitElement {
   private handleRecord() {
     if (this.isRecording) {
       this.isRecording = false;
+      this.serverLog('recording_saved', {trigger: 'manual'});
       this.saveRecording();
     } else if (this.playbackState === 'playing' || this.playbackState === 'loading') {
+      // Clear previous chunks so toggle-off→on starts a fresh capture, not an append.
       this.recordingChunks = [];
       this.isRecording = true;
     }
