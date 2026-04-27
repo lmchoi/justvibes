@@ -16,13 +16,13 @@ To transform this real-time music "steering" demo into a professional **Infinite
 - **Atomic Commits:** Prefer small, reviewable commits over large "monolith" changes.
 - **Commit Style:** Use Conventional Commits (e.g., `feat:`, `fix:`, `docs:`). Do NOT use "Step XX" prefixes.
 - **Commit Attribution:** Always append `Co-Authored-By: Gemini 2.0 Flash <noreply@google.com>` to the end of commit messages.
-- **Efficiency:** Prioritize the "Manual Record -> Clip Preview -> Seed Session" workflow to minimize token waste and human effort.
+- **Efficiency:** Prioritize automated session stitching and recording to maximize uptime and minimize manual intervention.
 
 ## Current Roadmap
-1.  **Phase 1 (Complete):** Manual Recording and Bookmarking (Heart button).
-2.  **Phase 2:** Implement "Vibe Check" UI using `lyria-3-clip-preview` for 30s snippets.
-3.  **Phase 3:** Implement "Seed" functionality to launch Realtime sessions from saved clips.
-4.  **Phase 4:** Automated Session Management (stitching 10-minute blocks into a 1-hour mix).
+1.  **Phase 1 (Complete):** Manual Recording and Bookmarking.
+2.  **Phase 2 (Parked):** "Vibe Check" UI using 30s snippets.
+3.  **Phase 3 (Parked):** "Seed" functionality using text prompt transfer.
+4.  **Phase 4 (Priority):** Automated Session Management (stitching 10-minute blocks into a 1-hour mix).
 
 ## Key Documentation
 Refer to the `docs/` directory for detailed PRDs and Lyria API references.
