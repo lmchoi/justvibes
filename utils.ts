@@ -70,4 +70,30 @@ async function decodeAudioData(
   return buffer;
 }
 
-export {createBlob, decode, decodeAudioData, encode};
+function encodeWav(pcm: Uint8Array, sampleRate: number, numChannels: number): ArrayBuffer {
+  const bitsPerSample = 16;
+  const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
+  const blockAlign = (numChannels * bitsPerSample) / 8;
+  const buffer = new ArrayBuffer(44 + pcm.length);
+  const view = new DataView(buffer);
+  const writeStr = (off: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
+  };
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + pcm.length, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  writeStr(36, 'data');
+  view.setUint32(40, pcm.length, true);
+  new Uint8Array(buffer, 44).set(pcm);
+  return buffer;
+}
+
+export {createBlob, decode, decodeAudioData, encode, encodeWav};

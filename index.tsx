@@ -15,7 +15,7 @@ import {
   type LiveMusicServerMessage,
   type LiveMusicSession,
 } from '@google/genai';
-import {decode, decodeAudioData} from './utils';
+import {decode, decodeAudioData, encodeWav} from './utils';
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -423,6 +423,31 @@ export class PlayPauseButton extends IconButton {
     } else {
       return this.renderPlay();
     }
+  }
+}
+
+@customElement('record-button')
+export class RecordButton extends IconButton {
+  @property({type: Boolean}) isRecording = false;
+
+  static override styles = [
+    IconButton.styles,
+    css`
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
+      .recording-dot {
+        animation: pulse 1.2s ease-in-out infinite;
+      }
+    `,
+  ];
+
+  override renderIcon() {
+    if (this.isRecording) {
+      return svg`<rect class="recording-dot" x="54" y="38" width="32" height="32" rx="4" fill="#FF4444" />`;
+    }
+    return svg`<circle cx="70" cy="54" r="16" fill="#FEFEFE" />`;
   }
 }
 
@@ -1325,7 +1350,8 @@ class PromptDj extends LitElement {
     }
     play-pause-button,
     add-prompt-button,
-    reset-button {
+    reset-button,
+    record-button {
       width: 12vmin;
       flex-shrink: 0;
     }
@@ -1353,6 +1379,8 @@ class PromptDj extends LitElement {
   private nextStartTime = 0;
   private readonly bufferTime = 2; // adds an audio buffer in case of netowrk latency
   @state() private playbackState: PlaybackState = 'stopped';
+  @state() private isRecording = false;
+  private recordingChunks: Uint8Array[] = [];
   @property({type: Object})
   private filteredPrompts = new Set<string>();
   private connectionError = true;
@@ -1360,6 +1388,7 @@ class PromptDj extends LitElement {
   @query('play-pause-button') private playPauseButton!: PlayPauseButton;
   @query('toast-message') private toastMessage!: ToastMessage;
   @query('settings-controller') private settingsController!: SettingsController;
+  @query('record-button') private recordButton!: RecordButton;
 
   constructor(prompts: Map<string, Prompt>) {
     super();
@@ -1396,8 +1425,12 @@ class PromptDj extends LitElement {
               this.playbackState === 'stopped'
             )
               return;
+            const rawChunk = decode(e.serverContent.audioChunks[0].data);
+            if (this.isRecording) {
+              this.recordingChunks.push(rawChunk);
+            }
             const audioBuffer = await decodeAudioData(
-              decode(e.serverContent?.audioChunks[0].data),
+              rawChunk,
               this.audioContext,
               48000,
               2,
@@ -1551,6 +1584,10 @@ class PromptDj extends LitElement {
       1,
       this.audioContext.currentTime + 0.1,
     );
+    if (!this.isRecording) {
+      this.recordingChunks = [];
+      this.isRecording = true;
+    }
   }
 
   private stopAudio() {
@@ -1562,6 +1599,10 @@ class PromptDj extends LitElement {
       this.audioContext.currentTime + 0.1,
     );
     this.nextStartTime = 0;
+    if (this.isRecording) {
+      this.isRecording = false;
+      this.saveRecording();
+    }
   }
 
   private async handleAddPrompt() {
@@ -1658,6 +1699,38 @@ class PromptDj extends LitElement {
     setTimeout(this.loadAudio.bind(this), 100);
   }
 
+  private handleRecord() {
+    if (this.isRecording) {
+      this.isRecording = false;
+      this.saveRecording();
+    } else if (this.playbackState === 'playing' || this.playbackState === 'loading') {
+      this.recordingChunks = [];
+      this.isRecording = true;
+    }
+  }
+
+  private saveRecording() {
+    if (this.recordingChunks.length === 0) return;
+
+    const totalBytes = this.recordingChunks.reduce((sum, c) => sum + c.length, 0);
+    const pcm = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of this.recordingChunks) {
+      pcm.set(chunk, offset);
+      offset += chunk.length;
+    }
+    this.recordingChunks = [];
+
+    const wavBuffer = encodeWav(pcm, 48000, 2);
+    const blob = new window.Blob([wavBuffer], {type: 'audio/wav'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `justvibes-${Date.now()}.wav`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   override render() {
     const bg = styleMap({
       backgroundImage: this.makeBackground(),
@@ -1683,6 +1756,9 @@ class PromptDj extends LitElement {
           @click=${this.handlePlayPause}
           .playbackState=${this.playbackState}></play-pause-button>
         <reset-button @click=${this.handleReset}></reset-button>
+        <record-button
+          @click=${this.handleRecord}
+          .isRecording=${this.isRecording}></record-button>
       </div>
       <toast-message></toast-message>`;
   }
@@ -1771,6 +1847,7 @@ declare global {
     'settings-controller': SettingsController;
     'add-prompt-button': AddPromptButton;
     'play-pause-button': PlayPauseButton;
+    'record-button': RecordButton;
     'reset-button': ResetButton;
     'weight-slider': WeightSlider;
     'toast-message': ToastMessage;
