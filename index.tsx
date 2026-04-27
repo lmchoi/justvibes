@@ -712,7 +712,7 @@ type VibeCheckState = 'idle' | 'generating' | 'ready' | 'error';
 
 /** Panel for generating a 30-second clip preview via lyria-3-clip-preview. */
 @customElement('vibe-check-panel')
-class VibeCheckPanel extends LitElement {
+export class VibeCheckPanel extends LitElement {
   static override styles = css`
     :host {
       display: none;
